@@ -3,6 +3,7 @@
 ##
 ## Copyright (C) 2009 Uwe Hermann <uwe@hermann-uwe.de>
 ## Copyright (C) 2010 Piotr Esden-Tempski <piotr@esden.net>
+## Copyright (C) 2011 Fergus Noble <fergusnoble@gmail.com>
 ##
 ## This library is free software: you can redistribute it and/or modify
 ## it under the terms of the GNU Lesser General Public License as published by
@@ -18,18 +19,18 @@
 ## along with this library.  If not, see <http://www.gnu.org/licenses/>.
 ##
 
-LIBNAME		= opencm3_stm32f1
-DEFS		+= -DSTM32F1
+LIBNAME		= opencm3_stm32f3
+DEFS		+= -DSTM32F3
 
-FP_FLAGS	?= -msoft-float
-ARCH_FLAGS	= -mthumb -mcpu=cortex-m3 $(FP_FLAGS) -mfix-cortex-m3-ldrd
+FP_FLAGS	?= -mfloat-abi=hard -mfpu=fpv4-sp-d16
+ARCH_FLAGS	= -mthumb -mcpu=cortex-m4 $(FP_FLAGS)
 
 ################################################################################
 # OpenOCD specific variables
 
 OOCD		?= openocd
-OOCD_INTERFACE	?= flossjtag
-OOCD_TARGET	?= stm32f1x
+OOCD_INTERFACE	?= stlink-v2
+OOCD_TARGET	?= stm32f3x
 
 ################################################################################
 # Black Magic Probe specific variables

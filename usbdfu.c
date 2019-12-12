@@ -26,7 +26,8 @@
 #include <libopencm3/stm32/tools.h>
 #include <libopencm3/stm32/st_usbfs.h>
 
-#define APP_ADDRESS	0x08005000
+#define APP_ADDRESS	0x08003000
+#define MAX_ADDRESS	0x08040000
 
 /* We need a special large control buffer for this device: */
 uint8_t usbd_control_buffer[2048];
@@ -60,7 +61,7 @@ const struct usb_device_descriptor dev = {
 const struct usb_dfu_descriptor dfu_function = {
 	.bLength = sizeof(struct usb_dfu_descriptor),
 	.bDescriptorType = DFU_FUNCTIONAL,
-	.bmAttributes = USB_DFU_CAN_DOWNLOAD | USB_DFU_WILL_DETACH,
+	.bmAttributes = USB_DFU_CAN_DOWNLOAD | USB_DFU_CAN_UPLOAD | USB_DFU_WILL_DETACH,
 	.wDetachTimeout = 255,
 	.wTransferSize = 2048,
 	.bcdDFUVersion = 0x0110,
@@ -134,11 +135,11 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 		uint32_t baseaddr = prog.addr +
 					prog.blocknum * dfu_function.wTransferSize;
 		flash_erase_page(baseaddr);
-		gpio_set(GPIOB, GPIO12);
+		gpio_set(GPIOC, GPIO13);
 		for (i = 0; i < prog.len; i += 2)
 			flash_program_half_word(baseaddr + i,
 						*(uint16_t*)(prog.buf+i));
-		gpio_clear(GPIOB, GPIO12);
+		gpio_clear(GPIOC, GPIO13);
 
 		/* We jump straight to dfuDNLOAD-IDLE,
 		 * skipping dfuDNLOAD-SYNC
@@ -150,7 +151,7 @@ static void usbdfu_getstatus_complete(usbd_device *device,
 	}
 }
 
-static int usbdfu_control_request(usbd_device *device,
+static enum usbd_request_return_codes usbdfu_control_request(usbd_device *device,
 				  struct usb_setup_data *req, uint8_t **buf,
 				  uint16_t *len,
 				  void (**complete)(usbd_device *device,
@@ -187,8 +188,21 @@ static int usbdfu_control_request(usbd_device *device,
 		usbdfu_state = STATE_DFU_IDLE;
 		return 1;
 	case DFU_UPLOAD:
-		/* Upload not supported for now */
-		return 0;
+		if ((usbdfu_state == STATE_DFU_IDLE) ||
+			(usbdfu_state == STATE_DFU_UPLOAD_IDLE)) {
+			usbdfu_state = STATE_DFU_UPLOAD_IDLE;
+			uint32_t baseaddr = prog.addr + req->wValue * dfu_function.wTransferSize;
+			uint32_t copy_size = MAX_ADDRESS - baseaddr;
+			gpio_toggle(GPIOC, GPIO13);
+			if (copy_size >= dfu_function.wTransferSize) {
+				memcpy(*buf, (void*)baseaddr, dfu_function.wTransferSize);
+			} else {
+				memcpy(*buf, (void*)baseaddr, copy_size);
+				*len = copy_size;
+				usbdfu_state = STATE_APP_DETACH;
+			}
+		}
+		return 1;
 	case DFU_GETSTATUS: {
 		uint32_t bwPollTimeout = 0; /* 24-bit integer in DFU class spec */
 
@@ -215,11 +229,15 @@ static int usbdfu_control_request(usbd_device *device,
 }
 
 static bool dfuDnloadStarted(void) {
-	return (usbdfu_state == STATE_DFU_DNBUSY) ? 1 : 0;
+	return (usbdfu_state == STATE_DFU_DNBUSY || usbdfu_state == STATE_DFU_UPLOAD_IDLE) ? 1 : 0;
 }
 
 static bool dfuDnloadDone(void) {
 	return (usbdfu_state == STATE_DFU_MANIFEST_WAIT_RESET) ? 1 : 0;
+}
+
+static bool dfuUploadDone(void) {
+	return (usbdfu_state == STATE_APP_DETACH) ? 1 : 0;
 }
 
 static bool checkUserCode(uint32_t usrAddr) {
@@ -251,8 +269,8 @@ static void RCC_DeInit(void)
   /* Set HSION bit */
 	SET_REG(&RCC_CR, GET_REG(&RCC_CR)     | 0x00000001);
 
-  /* Reset SW, HPRE, PPRE1, PPRE2, ADCPRE and MCO bits */
-	SET_REG(&RCC_CFGR, GET_REG(&RCC_CFGR) & 0xF0FF0000);
+  /* Reset SW[1:0], HPRE[3:0], PPRE[2:0] and MCOSEL[2:0] bits */
+	SET_REG(&RCC_CFGR, GET_REG(&RCC_CFGR) & 0xF8FFC000);
 
   /* Reset HSEON, CSSON and PLLON bits */
 	SET_REG(&RCC_CR, GET_REG(&RCC_CR)     & 0xFEF6FFFF);
@@ -260,35 +278,37 @@ static void RCC_DeInit(void)
   /* Reset HSEBYP bit */
 	SET_REG(&RCC_CR, GET_REG(&RCC_CR)     & 0xFFFBFFFF);
 
-  /* Reset PLLSRC, PLLXTPRE, PLLMUL and OTGFSPRE bits */
+  /* Reset PLLSRC, PLLXTPRE, PLLMUL and USBPRE bits */
 	SET_REG(&RCC_CFGR, GET_REG(&RCC_CFGR) & 0xFF80FFFF);
 
-  /* Reset PLL2ON and PLL3ON bits */
-	SET_REG(&RCC_CR, GET_REG(&RCC_CR)     & 0xEBFFFFFF);
+  /* Reset PREDIV1[3:0] and ADCPRE[13:4] bits */
+	SET_REG(&RCC_CFGR2, GET_REG(&RCC_CFGR2) & 0xFFFFC000);
 
-  /* Disable all interrupts and clear pending bits  */
-	SET_REG(&RCC_CIR, 0x00FF0000);
+  /* Reset USARTSW[1:0], I2CSW and TIMSW bits */
+	SET_REG(&RCC_CFGR3, GET_REG(&RCC_CFGR3) & 0xFF00FCCC);
 
-  /* Reset CFGR2 register */
-	SET_REG(&RCC_CFGR2, 0x00000000);
+  /* Disable all interrupts */
+	SET_REG(&RCC_CIR, 0x00000000);
 }
 
 int main(void)
 {
-	rcc_clock_setup_in_hse_25mhz_out_72mhz();
+	rcc_clock_setup_pll(&rcc_hse8mhz_configs[RCC_CLOCK_HSE8_72MHZ]);
 
-	rcc_periph_clock_enable(RCC_GPIOB);
-	gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ,
-						GPIO_CNF_OUTPUT_PUSHPULL, GPIO12);
+	rcc_periph_clock_enable(RCC_GPIOC);
+	gpio_mode_setup(GPIOC, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO13);
+	//gpio_set_output_options(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO13);
 
 	rcc_periph_clock_enable(RCC_GPIOA);
 	gpio_clear(GPIOA, GPIO12);
-	gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_50_MHZ,
-			GPIO_CNF_OUTPUT_OPENDRAIN, GPIO12);
+	gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO12);
 	volatile uint32_t delay;
 	for(delay=800000;delay;delay--);
 
-	usbd_device *usbd_dev = usbd_init(&stm32f107_usb_driver, &dev, &config,
+	gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO11 | GPIO12);
+	gpio_set_af(GPIOA, GPIO_AF14, GPIO11| GPIO12);
+
+	usbd_device *usbd_dev = usbd_init(&st_usbfs_v1_usb_driver, &dev, &config,
 		usb_strings, 3, usbd_control_buffer, sizeof(usbd_control_buffer));
 
 	usbd_register_control_callback(usbd_dev,
@@ -301,18 +321,21 @@ int main(void)
 	int delay_count = 0;
 	
 	while ((delay_count++ < 1) || no_user_jump) {
-		gpio_set(GPIOB, GPIO12);
-		for (int i=0; i<250000; i++) {
+		gpio_set(GPIOC, GPIO13);
+		for (int i=0; i<400000; i++) {
 			usbd_poll(usbd_dev);
-			if(i==125000)
-				gpio_clear(GPIOB, GPIO12);
+			if(i==200000)
+				gpio_clear(GPIOC, GPIO13);
 			if(dfuDnloadStarted()) {
-				gpio_clear(GPIOB, GPIO12);
-				while(!dfuDnloadDone()) {
+				gpio_clear(GPIOC, GPIO13);
+				while(!dfuDnloadDone() && !dfuUploadDone()) {
 					usbd_poll(usbd_dev);
 				}
-				/* poll a little more to allow the last status request */
-				for (int k=0; k<30; k++) { usbd_poll(usbd_dev); }
+				/* poll a little more to allow the last status request, TODO: improve this */
+				if (dfuDnloadDone())
+					for (int k=0; k<30; k++) { usbd_poll(usbd_dev); }
+				else
+					for (int k=0; k<500; k++) { usbd_poll(usbd_dev); }
 				break;
 			}
 		}

@@ -1,6 +1,6 @@
 # README
 
-A bootloader for the STM32F105RC.
+A bootloader for the STM32F303CC.
 Based on the usb_dfu for Lisa-M-1 in opencm3-examples.
 Needs libopencm3.
 

@@ -20,6 +20,6 @@
 BINARY = usbdfu
 CSTD = -std=gnu99
 
-LDSCRIPT = F105RC.ld
+LDSCRIPT = stm32f303xc.ld
 
 include target.mk
